@@ -185,6 +185,7 @@ typedef struct MonoAotOptions {
 	char *llvm_outfile;
 	char *data_outfile;
 	GList *profile_files;
+	GList *image_files;
 	gboolean save_temps;
 	gboolean write_symbols;
 	gboolean metadata_only;
@@ -389,6 +390,7 @@ typedef struct MonoAotCompile {
 	GPtrArray *objc_selectors;
 	GHashTable *objc_selector_to_index;
 	GList *profile_data;
+	GSList *loaded_assemblies;
 	GHashTable *profile_methods;
 #ifdef EMIT_WIN32_UNWIND_INFO
 	GList *unwind_info_section_cache;
@@ -8340,6 +8342,8 @@ mono_aot_parse_options (const char *aot_options, MonoAotOptions *opts)
 			opts->data_outfile = g_strdup (arg + strlen ("data-outfile="));
 		} else if (str_begins_with (arg, "profile=")) {
 			opts->profile_files = g_list_append (opts->profile_files, g_strdup (arg + strlen ("profile=")));
+		} else if (str_begins_with (arg, "image=")) {
+			opts->image_files = g_list_append (opts->image_files, g_strdup (arg + strlen ("image=")));
 		} else if (!strcmp (arg, "profile-only")) {
 			opts->profile_only = TRUE;
 		} else if (!strcmp (arg, "verbose")) {
@@ -12724,13 +12728,17 @@ resolve_ginst (GInstProfileData *inst_data)
 {
 	int i;
 
-	if (inst_data->inst)
+	if (inst_data->inst){
+		//printf("resolve_ginst: No instance\n");
 		return;
+	}
 
 	for (i = 0; i < inst_data->argc; ++i) {
 		resolve_class (inst_data->argv [i]);
-		if (!inst_data->argv [i]->klass)
+		if (!inst_data->argv [i]->klass){
+			//printf("resolve_ginst: No class @%d\n", i);
 			return;
+		}
 	}
 	MonoType **args = g_new0 (MonoType*, inst_data->argc);
 	for (i = 0; i < inst_data->argc; ++i)
@@ -12745,18 +12753,22 @@ resolve_class (ClassProfileData *cdata)
 	ERROR_DECL (error);
 	MonoClass *klass;
 
-	if (!cdata->image->image)
+	if (!cdata->image->image){
+		//printf ("0. resolve_class failed no image\n");
 		return;
+	}
 
 	klass = mono_class_from_name_checked (cdata->image->image, cdata->ns, cdata->name, error);
 	if (!klass) {
-		//printf ("[%s] %s.%s\n", cdata->image->name, cdata->ns, cdata->name);
+		//printf ("1. resolve_class failed [%s] %s.%s\n", cdata->image->name, cdata->ns, cdata->name);
 		return;
 	}
 	if (cdata->inst) {
 		resolve_ginst (cdata->inst);
-		if (!cdata->inst->inst)
+		if (!cdata->inst->inst){
+			//printf ("2.resolve_class !cdata->inst->inst \n");
 			return;
+		}
 		MonoGenericContext ctx;
 
 		memset (&ctx, 0, sizeof (ctx));
@@ -12781,7 +12793,6 @@ resolve_profile_data (MonoAotCompile *acfg, ProfileData *data, MonoAssembly* cur
 		return;
 
 	/* Images */
-	GPtrArray *assemblies = mono_domain_get_assemblies (mono_get_root_domain ());
 	g_hash_table_iter_init (&iter, data->images);
 	while (g_hash_table_iter_next (&iter, &key, &value)) {
 		ImageProfileData *idata = (ImageProfileData*)value;
@@ -12791,16 +12802,18 @@ resolve_profile_data (MonoAotCompile *acfg, ProfileData *data, MonoAssembly* cur
 			break;
 		}
 
-		for (i = 0; i < assemblies->len; ++i) {
-			MonoAssembly *ass = (MonoAssembly*)g_ptr_array_index (assemblies, i);
+		GSList *loaded_asm = acfg->loaded_assemblies;
+		printf ("acfg assemblies: %p\n", loaded_asm);
+		for (; loaded_asm; loaded_asm = loaded_asm->next) {
+			MonoAssembly *ass = loaded_asm->data;
 
+				printf ("acfg assembly: %s vs %s\n", ass->aname.name, idata->name);
 			if (!strcmp (ass->aname.name, idata->name)) {
 				idata->image = ass->image;
 				break;
 			}
 		}
 	}
-	g_ptr_array_free (assemblies, TRUE);
 
 	/* Classes */
 	g_hash_table_iter_init (&iter, data->classes);
@@ -12808,7 +12821,7 @@ resolve_profile_data (MonoAotCompile *acfg, ProfileData *data, MonoAssembly* cur
 		ClassProfileData *cdata = (ClassProfileData*)value;
 
 		if (!cdata->image->image) {
-			if (acfg->aot_opts.verbose)
+			// if (acfg->aot_opts.verbose)
 				printf ("Unable to load class '%s.%s' because its image '%s' is not loaded.\n", cdata->ns, cdata->name, cdata->image->name);
 			continue;
 		}
@@ -12831,8 +12844,8 @@ resolve_profile_data (MonoAotCompile *acfg, ProfileData *data, MonoAssembly* cur
 		resolve_class (mdata->klass);
 		klass = mdata->klass->klass;
 		if (!klass) {
-			if (acfg->aot_opts.verbose)
-				printf ("Unable to load method '%s' because its class '%s.%s' is not loaded.\n", mdata->name, mdata->klass->ns, mdata->klass->name);
+			// if (acfg->aot_opts.verbose)
+				//printf ("Unable to load method '%s' because its class '%s.%s' is not loaded.\n", mdata->name, mdata->klass->ns, mdata->klass->name);
 			continue;
 		}
 		miter = NULL;
@@ -12842,41 +12855,50 @@ resolve_profile_data (MonoAotCompile *acfg, ProfileData *data, MonoAssembly* cur
 			if (strcmp (m->name, mdata->name))
 				continue;
 			MonoMethodSignature *sig = mono_method_signature_internal (m);
-			if (!sig)
+			if (!sig){
+				//printf ("Skip 0 m=%s\n", mono_method_full_name (m, 1));
 				continue;
-			if (sig->param_count != mdata->param_count)
+			}
+			if (sig->param_count != mdata->param_count){
+				//printf ("Skip 1 m=%s\n", mono_method_full_name (m, 1));
 				continue;
+			}
 			if (mdata->inst) {
 				resolve_ginst (mdata->inst);
-				if (!mdata->inst->inst)
+				if (!mdata->inst->inst){
+					//printf ("Skip 2 m=%s\n", mono_method_full_name (m, 1));
 					continue;
+				}
 				MonoGenericContext ctx;
 
 				memset (&ctx, 0, sizeof (ctx));
 				ctx.method_inst = mdata->inst->inst;
 
 				m = mono_class_inflate_generic_method_checked (m, &ctx, error);
-				if (!m)
+				if (!m){
+					//printf ("Skip 3 m=%s\n", mono_method_full_name (m, 1));
 					continue;
+				}
 				sig = mono_method_signature_checked (m, error);
 				if (!is_ok (error)) {
 					mono_error_cleanup (error);
+					//printf ("Skip 4 m=%s\n", mono_method_full_name (m, 1));
 					continue;
 				}
 			}
 			char *sig_str = mono_signature_full_name (sig);
 			gboolean match = !strcmp (sig_str, mdata->signature);
+			printf ("matching sig_str=%s with m=%s match=%d\n", sig_str, mono_method_full_name (m, 1), match);
 			g_free (sig_str);
 			if (!match)
 
 				continue;
-			//printf ("%s\n", mono_method_full_name (m, 1));
 			mdata->method = m;
 			break;
 		}
 		if (!mdata->method) {
-			if (acfg->aot_opts.verbose)
-				printf ("Unable to load method '%s' from class '%s', not found.\n", mdata->name, mono_class_full_name (klass));
+			//if (acfg->aot_opts.verbose)
+				//printf ("Unable to load method '%s' from class '%s', not found.\n", mdata->name, mono_class_full_name (klass));
 		}
 	}
 }
@@ -12931,8 +12953,13 @@ add_profile_instances (MonoAotCompile *acfg, ProfileData *data)
 
 			if (!m)
 				continue;
-			if (m->is_inflated)
+
+			if (!m->is_inflated){
+				if (acfg->aot_opts.log_generics)
+					aot_printf (acfg, "1. Skipping non-inflated method %s.\n", mono_method_get_full_name (m));
 				continue;
+			}
+
 			add_extra_method (acfg, m);
 			g_hash_table_insert (acfg->profile_methods, m, m);
 			count ++;
@@ -12948,10 +12975,14 @@ add_profile_instances (MonoAotCompile *acfg, ProfileData *data)
 		MonoMethod *m = mdata->method;
 		MonoGenericContext *ctx;
 
-		if (!m)
+		if (!m){
 			continue;
-		if (!m->is_inflated)
+		}
+		if (!m->is_inflated){
+			//if (acfg->aot_opts.log_generics)
+			//	aot_printf (acfg, "2. Skipping non-inflated method %s.\n", mono_method_get_full_name (m));
 			continue;
+		}
 
 		ctx = mono_method_get_context (m);
 		/* For simplicity, add instances which reference the assembly we are compiling */
@@ -12969,6 +13000,9 @@ add_profile_instances (MonoAotCompile *acfg, ProfileData *data)
 			//printf ("%s\n", mono_method_full_name (m, TRUE));
 			add_extra_method (acfg, m);
 			count ++;
+		} else{
+			//if (acfg->aot_opts.log_generics)
+			//	aot_printf (acfg, "Skipping method %s.\n", mono_method_get_full_name (m));
 		}
 		/*
 		 * FIXME: We might skip some instances, for example:
@@ -13874,6 +13908,28 @@ mono_compile_assembly (MonoAssembly *ass, guint32 opts, const char *aot_options,
 		for (l = acfg->aot_opts.profile_files; l; l = l->next) {
 			load_profile_file (acfg, (char*)l->data);
 		}
+	}
+
+	if (acfg->aot_opts.image_files) {
+		GList *l;
+		MonoAssembly *assembly;
+		printf("Loading additional image files\n");
+
+		for (l = acfg->aot_opts.image_files; l; l = l->next) {
+			printf("Loading additional assembly: %s\n", (char*)l->data);
+			assembly = mono_domain_assembly_open_internal (mono_domain_get (), mono_domain_default_alc (mono_domain_get ()), (char*)l->data);
+
+			if(assembly){
+				printf("Loaded additional assembly: %s\n", (char*)l->data);
+				acfg->loaded_assemblies = g_slist_append (acfg->loaded_assemblies, assembly);
+			}
+			else{
+				printf("Not loaded additional assembly: %s\n", (char*)l->data);
+			}
+		}
+	}
+	else{
+		printf("No additional image files\n");
 	}
 
 	if (!(mono_aot_mode_is_interp (&acfg->aot_opts) && !mono_aot_mode_is_full (&acfg->aot_opts))) {
