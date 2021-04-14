@@ -2,17 +2,28 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
+using System.Linq;
 using System.Threading.Tasks;
 
-public class Test
+namespace Uno.Gallery.Wasm
 {
-    public static async Task<int> Main(string[] args)
+    public class Test
     {
-        await Task.Delay(1);
-        Console.WriteLine("Hello World!");
-        for (int i = 0; i < args.Length; i++) {
-            Console.WriteLine($"args[{i}] = {args[i]}");
+        public static async Task<int> Main(string[] args)
+        {
+            Console.WriteLine("start");
+            await Task.Delay(1);
+
+            var categories = App.GetSamples()
+                .OrderByDescending(x => x.SortOrder.HasValue)
+                .ThenBy(x => x.SortOrder)
+                .ThenBy(x => x.Title)
+                .GroupBy(x => x.Category)
+                .OrderBy(x => x.Key)
+                .ToArray();
+
+             Console.WriteLine("end " + categories.Length);
+           return args.Length;
         }
-        return args.Length;
     }
 }

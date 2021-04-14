@@ -6,9 +6,9 @@ namespace System.Runtime.CompilerServices
     internal static class JitHelpers
     {
         [Intrinsic]
-        public static bool EnumEquals<T>(T x, T y) where T : struct, Enum => throw new NotImplementedException();
+        public static bool EnumEquals<T>(T x, T y) where T : struct, Enum => Equals(x, y);
 
         [Intrinsic]
-        public static int EnumCompareTo<T>(T x, T y) where T : struct, Enum => throw new NotImplementedException();
+        public static int EnumCompareTo<T>(T x, T y) where T : struct, Enum => x.CompareTo(y);
     }
 }

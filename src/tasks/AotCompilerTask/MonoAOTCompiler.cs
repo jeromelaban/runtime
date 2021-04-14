@@ -278,6 +278,8 @@ public class MonoAOTCompiler : Microsoft.Build.Utilities.Task
             processArgs.Add("--nollvm");
         }
 
+        processArgs.Add("-O=gsharedvt");
+
         string assemblyFilename = Path.GetFileName(assembly);
 
         if (isDedup)

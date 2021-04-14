@@ -3,7 +3,7 @@ TOP=../../../../..
 include ../wasm.mk
 
 ifneq ($(AOT),)
-override MSBUILD_ARGS+=/p:RunAOTCompilation=true
+override MSBUILD_ARGS+=/p:RunAOTCompilation=true /p:WasmNativeStrip=false
 endif
 
 ifneq ($(V),)
